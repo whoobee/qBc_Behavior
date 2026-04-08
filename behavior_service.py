@@ -35,6 +35,8 @@ TOPIC_STATE = "robot/behavior/state"
 TOPIC_TREE_STATE = "robot/behavior/tree_state"
 TOPIC_CMD = "robot/behavior/cmd"
 TOPIC_HEARTBEAT = "robot/system/heartbeat/behavior"
+TOPIC_CURRENT_STATE = "robot/behavior/current_state"
+TOPIC_ERROR_INFO = "robot/behavior/error_info"
 
 
 class BehaviorService:
@@ -90,6 +92,9 @@ class BehaviorService:
         self._last_node_statuses: dict[str, str] = {}
         self._full_snapshot_sent = False
         self._lock = threading.Lock()
+
+        self._current_state = "loading_tree"
+        self._error_info = "E_OK"
 
     def _load_tree(self, path: str):
         """Load tree from YAML, raising on error."""
@@ -168,10 +173,13 @@ class BehaviorService:
             if candidate.exists():
                 tree_path = str(candidate)
         logger.info("Reloading tree from %s", tree_path)
+        self._current_state = "reloading_tree"
         try:
             root, bb_config, tree_meta = self._load_tree(tree_path)
         except TreeLoadError as e:
             logger.error("Reload failed: %s", e)
+            self._set_error("tree reload: " + str(e)[:80])
+            self._current_state = "running"
             return
 
         with self._lock:
@@ -196,10 +204,18 @@ class BehaviorService:
         if self.connected:
             self._bb_manager.subscribe_all(self._client)
 
+        self._current_state = "running"
+        self._set_error("E_OK")
         logger.info("Tree reloaded: %s", self._tree_name)
         self._publish_state()
 
     # ── State publishing ──────────────────────────────────────────
+
+    def _set_error(self, error):
+        """Set and publish error info."""
+        self._error_info = error
+        if self.connected:
+            self._client.publish(TOPIC_ERROR_INFO, error, qos=1, retain=True)
 
     def _publish_state(self):
         """Publish retained service state (standard qBc pattern)."""
@@ -214,6 +230,10 @@ class BehaviorService:
         }
         self._client.publish(TOPIC_STATE, json.dumps(state), qos=1,
                              retain=True)
+        self._client.publish(TOPIC_CURRENT_STATE, self._current_state,
+                             qos=1, retain=True)
+        self._client.publish(TOPIC_ERROR_INFO, self._error_info,
+                             qos=1, retain=True)
 
     def _publish_tree_state(self):
         """Publish tree state snapshot for the visualizer.
@@ -353,6 +373,7 @@ class BehaviorService:
         self._running = True
 
         # Start tick loop in background thread
+        self._current_state = "running"
         tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
 
         # Connect MQTT
