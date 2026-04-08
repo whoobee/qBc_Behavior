@@ -76,9 +76,9 @@ root:
         - type: "PlayAnimation"
           name: "show_attention"
           params:
-            expression: "curious"
+            expression: "wakeword"
             duration: 1.5
-            color: "cyan"
+            color: "green"
 
         - type: "WaitForEvent"
           name: "wait_for_voice"
@@ -196,7 +196,7 @@ root:
                   name: "chirp_sound"
                   params:
                     file: "chirp.wav"
-                    volume: 30
+                    volume: 50
 
             - type: "PlayAnimation"
               name: "idle_blink"

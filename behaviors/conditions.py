@@ -101,6 +101,8 @@ class EventCheck(py_trees.behaviour.Behaviour):
         self._max_age = max_age_sec
         self._consume = consume
         self._bb_key = key.replace(".", "/")
+
+    def initialise(self):
         self._bb = self.attach_blackboard_client()
         self._bb.register_key(
             key=self._bb_key, access=py_trees.common.Access.WRITE,

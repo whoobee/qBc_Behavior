@@ -90,7 +90,7 @@ class TreeLoader:
             policy = self._make_parallel_policy(policy_name)
             node = cls(name=name, policy=policy)
         elif node_type in ("Sequence", "Selector"):
-            memory = params.get("memory", True)
+            memory = desc.get("memory", params.get("memory", True))
             node = cls(name=name, memory=memory)
         else:
             # Custom composites (RandomSelector, etc.)
