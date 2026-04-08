@@ -1,0 +1,116 @@
+tree:
+  name: "obstacle_avoidance"
+  description: "Example: drive forward, detect obstacles via ToF sensor, stop, play surprised animation, turn around, and resume driving"
+  tick_rate_hz: 10
+
+blackboard:
+  subscriptions:
+    # ToF distance sensor publishes { "distance_cm": float }
+    - topic: "robot/sensors/tof"
+      key: "sensors.tof"
+      qos: 1
+    - topic: "robot/animation/state"
+      key: "animation.state"
+      qos: 1
+
+  heartbeats:
+    - topic: "robot/system/heartbeat/animation"
+      key: "heartbeat.animation"
+
+root:
+  type: "Selector"
+  name: "root_priority"
+  memory: false
+  children:
+
+    # ── Priority 1: Obstacle detected — stop, react, turn around ──
+    #
+    # When the ToF sensor reads < 30 cm the full reaction sequence runs
+    # to completion (memory: true) before the tree re-evaluates.
+    - type: "Sequence"
+      name: "obstacle_reaction"
+      memory: true
+      children:
+
+        # Gate: only enter this branch when something is close
+        - type: "BlackboardCondition"
+          name: "obstacle_close"
+          params:
+            key: "sensors.tof.distance_cm"
+            operator: "<"
+            value: 30.0
+            default: 999.0       # assume clear if sensor hasn't reported yet
+
+        # 1. Immediately stop the wheels
+        - type: "SendCommand"
+          name: "emergency_stop"
+          params:
+            topic: "robot/wheels/cmd"
+            payload:
+              command: "stop"
+
+        # 2. Show a surprised face
+        - type: "PlayAnimation"
+          name: "show_surprise"
+          params:
+            expression: "surprised"
+            duration: 2.0
+            color: "red"
+
+        # 3. Pause to let the reaction play out
+        - type: "TimerBehavior"
+          name: "react_pause"
+          params:
+            duration_sec: 1.5
+
+        # 4. Think about what to do
+        - type: "PlayAnimation"
+          name: "show_thinking"
+          params:
+            expression: "thinking"
+            duration: 1.0
+
+        # 5. Turn around (spin in place)
+        - type: "SendCommand"
+          name: "turn_around"
+          params:
+            topic: "robot/wheels/cmd"
+            payload:
+              command: "rotate"
+              left_speed: 60
+              right_speed: -60
+
+        # 6. Wait for the turn to complete (~180 degrees)
+        - type: "TimerBehavior"
+          name: "turning_wait"
+          params:
+            duration_sec: 2.5
+
+        # 7. Stop the rotation
+        - type: "SendCommand"
+          name: "stop_after_turn"
+          params:
+            topic: "robot/wheels/cmd"
+            payload:
+              command: "stop"
+
+        # 8. Happy face — all clear!
+        - type: "PlayAnimation"
+          name: "all_clear"
+          params:
+            expression: "happy"
+            duration: 1.5
+            color: "green"
+
+    # ── Priority 2: No obstacle — keep driving forward ──
+    #
+    # This fires every tick when nothing is blocking the path.
+    # The wheel controller treats repeated drive commands as a heartbeat.
+    - type: "SendCommand"
+      name: "drive_forward"
+      params:
+        topic: "robot/wheels/cmd"
+        payload:
+          command: "drive"
+          left_speed: 40
+          right_speed: 40

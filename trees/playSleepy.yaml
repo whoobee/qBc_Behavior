@@ -1,0 +1,38 @@
+tree:
+  name: obstacle_avoidance
+  description: 'Example: drive forward, detect obstacles via ToF sensor, stop, play
+    surprised animation, turn around, and resume driving'
+  tick_rate_hz: 10
+blackboard:
+  subscriptions:
+  - topic: robot/sensors/tof
+    key: sensors.tof
+    qos: 1
+  - topic: robot/animation/state
+    key: animation.state
+    qos: 1
+  heartbeats:
+  - topic: robot/system/heartbeat/animation
+    key: heartbeat.animation
+root:
+  type: Selector
+  name: ROOT
+  memory: false
+  children:
+  - type: Timeout
+    name: Timeout
+    params:
+      duration_sec: 10
+    child:
+      type: PlayAnimation
+      name: PlayAnimation-Sleepy
+      params:
+        expression: happy
+        duration: 10000
+        color: RED
+  - type: PlayAnimation
+    name: PlayAnimation
+    params:
+      expression: excited
+      duration: 0
+      color: ORANGE

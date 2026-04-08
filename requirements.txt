@@ -1,0 +1,3 @@
+py-trees>=2.4.0
+pyyaml>=6.0
+paho-mqtt>=2.0
