@@ -1,0 +1,30 @@
+tree:
+  name: Test01
+  tick_rate_hz: 30
+blackboard:
+  subscriptions: []
+  events: []
+  heartbeats: []
+root:
+  type: Sequence
+  name: Sequence
+  memory: false
+  children:
+  - type: PlayAnimation
+    name: PlayAnimation
+    params:
+      expression: sad
+      duration: 2
+      color: magenta
+  - type: PlayAudio
+    name: PlayAudio
+    params:
+      file: BleepBop_02.wav
+      volume: 50
+  - type: MoveJoint
+    name: MoveJoint
+    params:
+      joint_name: left_ear
+      target_position: 60
+      duration: 5
+      movement_type: exponential

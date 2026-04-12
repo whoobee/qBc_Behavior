@@ -1,211 +1,220 @@
 tree:
-  name: "default_behavior"
-  description: "Default qB Companion behavior tree with wake-word response and idle personality"
+  name: default_behavior
+  description: Default qB Companion behavior tree with wake-word response and idle
+    personality
   tick_rate_hz: 30
-
 blackboard:
   subscriptions:
-    - topic: "robot/audio/state"
-      key: "audio.state"
-      qos: 1
-    - topic: "robot/vision/state"
-      key: "vision.state"
-      qos: 1
-    - topic: "robot/animation/state"
-      key: "animation.state"
-      qos: 1
-    - topic: "robot/ai/state"
-      key: "ai.state"
-      qos: 1
-    - topic: "robot/ai/voice/state"
-      key: "ai_voice.state"
-      qos: 1
-    - topic: "robot/ai/explore/state"
-      key: "ai_explore.state"
-      qos: 1
-    - topic: "robot/joints/status"
-      key: "joints.status"
-      qos: 1
-
+  - topic: robot/audio/state
+    key: audio.state
+    qos: 1
+  - topic: robot/vision/state
+    key: vision.state
+    qos: 1
+  - topic: robot/animation/state
+    key: animation.state
+    qos: 1
+  - topic: robot/ai/state
+    key: ai.state
+    qos: 1
+  - topic: robot/ai/voice/state
+    key: ai_voice.state
+    qos: 1
+  - topic: robot/ai/explore/state
+    key: ai_explore.state
+    qos: 1
+  - topic: robot/joints/status
+    key: joints.status
+    qos: 1
+  - topic: robot/navigation/state
+    key: navigation.state
+    qos: 1
   events:
-    - topic: "robot/audio/wake_word"
-      key: "events.wake_word"
-      qos: 1
-    - topic: "robot/audio/recording_ready"
-      key: "events.recording_ready"
-      qos: 1
-    - topic: "robot/vision/frame_ready"
-      key: "events.frame_ready"
-      qos: 1
-    - topic: "robot/ai/explore/result"
-      key: "events.explore_result"
-      qos: 1
-
+  - topic: robot/audio/wake_word
+    key: events.wake_word
+    qos: 1
+  - topic: robot/audio/recording_ready
+    key: events.recording_ready
+    qos: 1
+  - topic: robot/vision/frame_ready
+    key: events.frame_ready
+    qos: 1
+  - topic: robot/ai/explore/result
+    key: events.explore_result
+    qos: 1
   heartbeats:
-    - topic: "robot/system/heartbeat/audio"
-      key: "heartbeat.audio"
-    - topic: "robot/system/heartbeat/vision"
-      key: "heartbeat.vision"
-    - topic: "robot/system/heartbeat/animation"
-      key: "heartbeat.animation"
-    - topic: "robot/system/heartbeat/servos"
-      key: "heartbeat.servos"
-    - topic: "robot/system/heartbeat/ai"
-      key: "heartbeat.ai"
-
+  - topic: robot/system/heartbeat/audio
+    key: heartbeat.audio
+  - topic: robot/system/heartbeat/vision
+    key: heartbeat.vision
+  - topic: robot/system/heartbeat/animation
+    key: heartbeat.animation
+  - topic: robot/system/heartbeat/servos
+    key: heartbeat.servos
+  - topic: robot/system/heartbeat/ai
+    key: heartbeat.ai
+  - topic: robot/system/heartbeat/navigation
+    key: heartbeat.navigation
 root:
-  type: "Selector"
-  name: "root_priority"
+  type: Selector
+  name: root_priority
   memory: false
   children:
-
-    # Priority 1: React to wake word
-    - type: "Sequence"
-      name: "wake_word_response"
+  - type: Sequence
+    name: wake_word_response
+    memory: true
+    children:
+    - type: EventCheck
+      name: wake_word_detected
+      params:
+        key: events.wake_word
+        max_age_sec: 5
+        consume: true
+    - type: PlayAnimation
+      name: show_attention
+      params:
+        expression: wakeword
+        duration: 1.5
+        color: green
+    - type: WaitForEvent
+      name: wait_for_voice
+      params:
+        key: events.recording_ready
+        timeout_sec: 12
+    - type: PlayAnimation
+      name: show_thinking
+      params:
+        expression: thinking
+        duration: 2
+  - type: CooldownGuard
+    name: explore_guard
+    params:
+      cooldown_sec: 1200
+    child:
+      type: Sequence
+      name: explore_sequence
       memory: true
       children:
-        - type: "EventCheck"
-          name: "wake_word_detected"
-          params:
-            key: "events.wake_word"
-            max_age_sec: 5.0
-            consume: true
-
-        # Wake word ack sound is now played directly by qBc_Audio
-
-        - type: "PlayAnimation"
-          name: "show_attention"
-          params:
-            expression: "wakeword"
-            duration: 1.5
-            color: "green"
-
-        - type: "WaitForEvent"
-          name: "wait_for_voice"
-          params:
-            key: "events.recording_ready"
-            timeout_sec: 12.0
-
-        - type: "PlayAnimation"
-          name: "show_thinking"
-          params:
-            expression: "thinking"
-            duration: 2.0
-
-    # Priority 2: Periodic exploration (capture + VLM analysis + narration)
-    - type: "CooldownGuard"
-      name: "explore_guard"
+      - type: HeartbeatCheck
+        name: AI Heartbeat Check
+        params:
+          key: heartbeat.ai
+          max_age_sec: 1
+      - type: PlayAnimation
+        name: explore_curious
+        params:
+          expression: curious
+          duration: 1
+          color: blue
+      - type: SendCommand
+        name: trigger_explore
+        params:
+          topic: robot/ai/explore/cmd
+          payload:
+            command: explore
+          qos: 0
+      - type: PlayAnimation
+        name: explore_thinking
+        params:
+          expression: thinking
+          duration: 0
+      - type: WaitForEvent
+        name: wait_explore_result
+        params:
+          key: events.explore_result
+          timeout_sec: 30
+      - type: PlayAnimation
+        name: explore_excited
+        params:
+          expression: happy
+          duration: 3
+          color: green
+      - type: PlayAnimation
+        name: explore_clear
+        params:
+          expression: idle
+          duration: 0
+  - type: Sequence
+    name: idle_guard
+    memory: false
+    children:
+    - type: BlackboardCondition
+      name: nav_is_idle
       params:
-        cooldown_sec: 120.0
-      child:
-        type: "Sequence"
-        name: "explore_sequence"
-        memory: true
+        key: navigation.state.nav_state
+        operator: ==
+        value: idle
+        default: idle
+    - type: BlackboardCondition
+      name: ai_not_exploring
+      params:
+        key: ai_explore.state.processing
+        operator: ==
+        value: false
+        default: false
+    - type: Sequence
+      name: idle_loop
+      memory: true
+      children:
+      - type: TimerBehavior
+        name: idle_cooldown
+        params:
+          duration_sec: 10
+      - type: RandomSelector
+        name: idle_choices
+        memory: false
         children:
-          - type: "PlayAnimation"
-            name: "explore_curious"
-            params:
-              expression: "curious"
-              duration: 1.0
-              color: "blue"
-
-          - type: "SendCommand"
-            name: "trigger_explore"
-            params:
-              topic: "robot/ai/explore/cmd"
-              payload:
-                command: "explore"
-
-          - type: "PlayAnimation"
-            name: "explore_thinking"
-            params:
-              expression: "thinking"
-
-          - type: "WaitForEvent"
-            name: "wait_explore_result"
-            params:
-              key: "events.explore_result"
-              timeout_sec: 30.0
-
-          - type: "PlayAnimation"
-            name: "explore_excited"
-            params:
-              expression: "happy"
-              duration: 3.0
-              color: "green"
-
-    # Priority 3: Idle personality (random behaviors)
-    - type: "Sequence"
-      name: "idle_loop"
-      memory: true
-      children:
-        - type: "TimerBehavior"
-          name: "idle_cooldown"
-          params:
-            duration_sec: 10.0
-
-        - type: "RandomSelector"
-          name: "idle_choices"
+        - type: Sequence
+          name: idle_look_around
+          memory: true
           children:
-            - type: "Sequence"
-              name: "idle_look_around"
-              memory: true
-              children:
-                - type: "PlayAnimation"
-                  name: "curious_look"
-                  params:
-                    expression: "curious"
-                    duration: 3.0
-                - type: "MoveJoint"
-                  name: "look_left"
-                  params:
-                    joint_name: "neck"
-                    target_position: -30.0
-                    duration: 1.5
-                    movement_type: "quadratic"
-                - type: "TimerBehavior"
-                  name: "pause_looking"
-                  params:
-                    duration_sec: 1.0
-                - type: "MoveJoint"
-                  name: "look_right"
-                  params:
-                    joint_name: "neck"
-                    target_position: 30.0
-                    duration: 2.0
-                    movement_type: "quadratic"
-                - type: "MoveJoint"
-                  name: "center_head"
-                  params:
-                    joint_name: "neck"
-                    target_position: 0.0
-                    duration: 1.0
-                    movement_type: "linear"
-
-            - type: "Sequence"
-              name: "idle_happy_chirp"
-              memory: true
-              children:
-                - type: "PlayAnimation"
-                  name: "happy_face"
-                  params:
-                    expression: "happy"
-                    duration: 2.0
-                    color: "green"
-                - type: "PlayAudio"
-                  name: "chirp_sound"
-                  params:
-                    file: "chirp.wav"
-                    volume: 50
-
-            - type: "PlayAnimation"
-              name: "idle_blink"
-              params:
-                expression: "blink"
-                duration: 0.5
-
-    # Fallback: maintain idle expression
-    - type: "PlayAnimation"
-      name: "set_idle"
-      params:
-        expression: "idle"
+          - type: PlayAnimation
+            name: curious_look
+            params:
+              expression: curious
+              duration: 3
+          - type: MoveJoint
+            name: look_left
+            params:
+              joint_name: neck
+              target_position: -30
+              duration: 1.5
+              movement_type: quadratic
+          - type: TimerBehavior
+            name: pause_looking
+            params:
+              duration_sec: 1
+          - type: MoveJoint
+            name: look_right
+            params:
+              joint_name: neck
+              target_position: 30
+              duration: 2
+              movement_type: quadratic
+          - type: MoveJoint
+            name: center_head
+            params:
+              joint_name: neck
+              target_position: 0
+              duration: 1
+              movement_type: linear
+        - type: Sequence
+          name: idle_happy_chirp
+          memory: true
+          children:
+          - type: PlayAnimation
+            name: happy_face
+            params:
+              expression: happy
+              duration: 2
+              color: green
+          - type: PlayAudio
+            name: chirp_sound
+            params:
+              file: chirp.wav
+              volume: 50
+  - type: PlayAnimation
+    name: set_idle
+    params:
+      expression: idle
+      duration: 0
