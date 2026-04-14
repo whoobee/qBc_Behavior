@@ -96,6 +96,26 @@ class BehaviorService:
         self._current_state = "loading_tree"
         self._error_info = "E_OK"
 
+        # ── Safe-point pause state machine ─────────────────────────
+        # The Animation Editor's "Play on Robot" button pauses the BT so
+        # its own test animation runs in a clean state. We don't cut the
+        # tree off mid-tick — instead we wait for the next tick where the
+        # root returns a non-RUNNING status, which means no Sequence or
+        # action is currently in progress. That's the "safe point" where
+        # pausing can't leave a memory:true sequence stranded between
+        # children or interrupt an ongoing PlayAnimation / MoveJoint.
+        #
+        # States:
+        #   "running"       — ticks normally
+        #   "pause_pending" — pause requested, waiting for safe point
+        #   "paused"        — tree is not ticked; auto-resumes at deadline
+        #
+        # _pause_deadline is a monotonic timestamp used both as the
+        # auto-resume trigger (if the editor crashes mid-test) and as
+        # the cap on how long we'll wait for a safe point.
+        self._pause_state = "running"
+        self._pause_deadline: float | None = None
+
     def _load_tree(self, path: str):
         """Load tree from YAML, raising on error."""
         try:
@@ -160,6 +180,31 @@ class BehaviorService:
                 self._reload_tree(tree_file)
             else:
                 logger.warning("Load command missing 'tree' field")
+        elif command == "pause":
+            # Optional timeout_sec acts as both the safe-point wait cap
+            # and the auto-resume fail-safe so a crashed caller can't
+            # leave the BT paused indefinitely.
+            try:
+                timeout_sec = float(data.get("timeout_sec", 30.0))
+            except (TypeError, ValueError):
+                timeout_sec = 30.0
+            timeout_sec = max(1.0, min(timeout_sec, 300.0))
+            with self._lock:
+                self._pause_deadline = time.monotonic() + timeout_sec
+                if self._pause_state == "running":
+                    self._pause_state = "pause_pending"
+                # If already paused or pause_pending, just extend the
+                # deadline (idempotent for rapid-fire test plays).
+            logger.info("Pause requested (timeout=%.1fs)", timeout_sec)
+            self._publish_current_state()
+        elif command == "resume":
+            with self._lock:
+                was = self._pause_state
+                self._pause_state = "running"
+                self._pause_deadline = None
+            if was != "running":
+                logger.info("Resume requested (was %s)", was)
+                self._publish_current_state()
         else:
             logger.warning("Unknown behavior command: %s", command)
 
@@ -230,10 +275,36 @@ class BehaviorService:
         }
         self._client.publish(TOPIC_STATE, json.dumps(state), qos=1,
                              retain=True)
-        self._client.publish(TOPIC_CURRENT_STATE, self._current_state,
+        self._client.publish(TOPIC_CURRENT_STATE,
+                             self._effective_current_state(),
                              qos=1, retain=True)
         self._client.publish(TOPIC_ERROR_INFO, self._error_info,
                              qos=1, retain=True)
+
+    def _effective_current_state(self) -> str:
+        """Current state including pause overlay.
+
+        The pause overlay shadows the underlying `_current_state` so
+        external observers (the editor backend) can see pause_pending /
+        paused transitions on robot/behavior/current_state.
+        """
+        if self._pause_state != "running":
+            return self._pause_state
+        return self._current_state
+
+    def _publish_current_state(self):
+        """Publish just the current_state topic immediately.
+
+        Used for event-driven transitions (pause request, safe-point
+        reached, resume) so the editor backend sees the change without
+        waiting for the 5s _publish_state heartbeat.
+        """
+        if self.connected:
+            self._client.publish(
+                TOPIC_CURRENT_STATE,
+                self._effective_current_state(),
+                qos=1, retain=True,
+            )
 
     def _publish_tree_state(self):
         """Publish tree state snapshot for the visualizer.
@@ -330,6 +401,27 @@ class BehaviorService:
             tick_start = time.monotonic()
 
             with self._lock:
+                # ── Pause gating ──
+                # If we're fully paused, skip the tick entirely — no
+                # blackboard flush, no tree tick, no action publishes.
+                # Auto-resume if the deadline set by the pause command
+                # has elapsed (fail-safe for crashed callers).
+                if self._pause_state == "paused":
+                    if (self._pause_deadline is not None
+                            and tick_start >= self._pause_deadline):
+                        logger.warning(
+                            "Pause deadline expired, auto-resuming")
+                        self._pause_state = "running"
+                        self._pause_deadline = None
+                        self._publish_current_state()
+                    else:
+                        # Stay paused; skip the rest of the tick body.
+                        elapsed = time.monotonic() - tick_start
+                        sleep_time = self._tick_interval - elapsed
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
+                        continue
+
                 # 1. Flush staged MQTT data to blackboard
                 self._bb_manager.flush_to_blackboard()
 
@@ -341,7 +433,28 @@ class BehaviorService:
 
                 self._tick_count += 1
 
-                # 3. Publish tree state for visualizer
+                # 3. Safe-point detection for pending pause requests.
+                # py_trees root.status is RUNNING whenever any memory
+                # sequence or long-running action is mid-flight. A
+                # non-RUNNING status after a tick means the tree has
+                # come to rest — every active branch has completed
+                # its current cycle — and it's safe to stop ticking.
+                if self._pause_state == "pause_pending":
+                    root_status = getattr(self._root, "status", None)
+                    root_running = (
+                        root_status == py_trees.common.Status.RUNNING)
+                    deadline_passed = (
+                        self._pause_deadline is not None
+                        and tick_start >= self._pause_deadline)
+                    if not root_running or deadline_passed:
+                        if deadline_passed and root_running:
+                            logger.warning(
+                                "Pause wait deadline hit mid-sequence, "
+                                "pausing anyway")
+                        self._pause_state = "paused"
+                        self._publish_current_state()
+
+                # 4. Publish tree state for visualizer
                 try:
                     self._publish_tree_state()
                 except Exception:
