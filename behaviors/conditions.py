@@ -79,6 +79,18 @@ class BlackboardCondition(py_trees.behaviour.Behaviour):
                     val = self._default
                     break
 
+        # The bridge now publishes JSON ``null`` for any low-confidence sensor
+        # sample (firmware NaN). A leaf that resolves to ``None`` would throw
+        # TypeError under numeric operators — fall back to the configured
+        # default so the tree behaves the same as for a missing key. The
+        # ``exists`` operator is the deliberate exception: it WANTS to test
+        # for None.
+        if val is None and self._operator_name != "exists":
+            if self._default is None:
+                self.feedback_message = f"{self._key}: null (low confidence)"
+                return py_trees.common.Status.FAILURE
+            val = self._default
+
         result = self._op_func(val, self._compare_value)
         self.feedback_message = f"{self._key} {self._operator_name} {self._compare_value}: {result}"
         return py_trees.common.Status.SUCCESS if result else py_trees.common.Status.FAILURE
