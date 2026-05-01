@@ -384,6 +384,9 @@ class BTCreator:
                                          "curious", "thinking", "blink",
                                          "surprised", "sleepy"],
                                         f"params.{param_name}")
+            elif param_name == "tree_path":
+                self._add_prop_tree_selector(param_name, str(current_value),
+                                              f"params.{param_name}")
             else:
                 self._add_prop_field(param_name, str(current_value),
                                      f"params.{param_name}")
@@ -406,6 +409,14 @@ class BTCreator:
             bg="#2ecc71", fg="white", font=NODE_FONT,
             relief=tk.FLAT, padx=10,
         ).pack(side=tk.LEFT, padx=2)
+
+        if node_type == "CallSubtree":
+            tk.Button(
+                btn_frame, text="Open Subtree",
+                command=self._cmd_open_subtree,
+                bg="#4a90d9", fg="white", font=NODE_FONT,
+                relief=tk.FLAT, padx=10,
+            ).pack(side=tk.LEFT, padx=2)
 
         tk.Button(
             btn_frame, text="Delete", command=self._cmd_delete_node,
@@ -460,6 +471,16 @@ class BTCreator:
                              font=LABEL_FONT, width=18)
         combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._props_widgets[key] = var
+
+    def _add_prop_tree_selector(self, label: str, value: str, key: str):
+        """Add a dropdown of available subtree YAML files (excluding self)."""
+        available = []
+        if DEFAULT_TREE_DIR.exists():
+            available = sorted(f.stem for f in DEFAULT_TREE_DIR.glob("*.yaml"))
+            if self._current_file is not None:
+                current_stem = self._current_file.stem
+                available = [t for t in available if t != current_stem]
+        self._add_prop_dropdown(label, value, available, key)
 
     def _add_prop_topic_selector(self, label: str, value: str, key: str):
         """Add a topic selector with all known output topics."""
@@ -795,6 +816,51 @@ class BTCreator:
             self._set_status(f"Opened: {path}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open file:\n{e}")
+
+    def _cmd_open_subtree(self):
+        """Open the YAML file referenced by the selected CallSubtree node."""
+        selected = self._tree_canvas.get_selected_id()
+        if selected is None:
+            return
+        node_desc = self._find_node(self._tree_desc["root"], selected)
+        if node_desc is None or node_desc.get("type") != "CallSubtree":
+            return
+        tree_path = node_desc.get("params", {}).get("tree_path", "").strip()
+        if not tree_path:
+            messagebox.showwarning("Open Subtree",
+                                    "This CallSubtree has no tree_path set.")
+            return
+
+        candidates = [Path(tree_path),
+                      DEFAULT_TREE_DIR / tree_path,
+                      DEFAULT_TREE_DIR / (tree_path + ".yaml")]
+        target = next((c for c in candidates
+                       if c.exists() and c.is_file()), None)
+        if target is None:
+            messagebox.showerror("Open Subtree",
+                                  f"Subtree file not found: {tree_path}")
+            return
+
+        if self._unsaved:
+            if not messagebox.askyesno("Unsaved Changes",
+                                        "Discard unsaved changes?"):
+                return
+
+        try:
+            with open(target) as f:
+                desc = yaml.safe_load(f)
+            if "root" not in desc:
+                messagebox.showerror("Error",
+                                      "Invalid tree file: no 'root' section")
+                return
+            self._tree_desc = desc
+            self._current_file = target
+            self._unsaved = False
+            self._show_no_selection()
+            self._refresh_canvas()
+            self._set_status(f"Opened subtree: {target}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open subtree:\n{e}")
 
     def _cmd_save(self):
         if self._current_file is None:

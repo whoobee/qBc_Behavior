@@ -1,0 +1,161 @@
+tree:
+  name: "explore"
+  description: >
+    Random-distance exploration. Reads ToF sensors, picks the cardinal
+    direction with the most free space, rotates to face it, then drives
+    a random distance using closed-loop position mode. An obstacle
+    detected on the front ToF preempts the drive segment.
+  tick_rate_hz: 10
+
+blackboard:
+  subscriptions:
+    - topic: "robot/sensors/tof"
+      key:   "sensors.tof"
+      qos:   0
+    - topic: "robot/status/motors"
+      key:   "status.motors"
+      qos:   0
+
+root:
+  type: "Sequence"
+  name: "explore_root"
+  memory: true
+  children:
+
+    # 1. Pick the freest cardinal direction from ToF readings.
+    #    Writes explore.heading + explore.distance_mm to the blackboard.
+    #    Fails (returns FAILURE) when every direction is blocked, which
+    #    bubbles up so the parent tree can decide what to do (back up,
+    #    play 'stuck', etc.).
+    - type: "PickFreeDirection"
+      name: "pick_direction"
+      params:
+        source_key: "sensors.tof"
+        output_key: "explore"
+        min_clearance_mm: 250.0
+
+    # 2. Rotate to face the picked heading. Each branch is a Sequence
+    #    gated by a BlackboardCondition; only one branch fires per call.
+    - type: "Selector"
+      name: "rotate_to_heading"
+      memory: false
+      children:
+
+        - type: "Sequence"
+          name: "head_front"
+          memory: true
+          children:
+            - type: "BlackboardCondition"
+              name: "is_front"
+              params:
+                key: "explore.heading"
+                operator: "=="
+                value: "front"
+            # No rotation needed.
+            - type: "TimerBehavior"
+              name: "noop_front"
+              params:
+                duration_sec: 0.05
+
+        - type: "Sequence"
+          name: "head_left"
+          memory: true
+          children:
+            - type: "BlackboardCondition"
+              name: "is_left"
+              params:
+                key: "explore.heading"
+                operator: "=="
+                value: "left"
+            - type: "Parallel"
+              name: "spin_left"
+              params:
+                policy: "SuccessOnOne"
+              children:
+                - type: "TimerBehavior"
+                  name: "spin_left_time"
+                  params:
+                    duration_sec: 0.6
+                - type: "DriveWheels"
+                  name: "spin_left_drive"
+                  params:
+                    left_vel:  -20.0
+                    right_vel:  20.0
+
+        - type: "Sequence"
+          name: "head_right"
+          memory: true
+          children:
+            - type: "BlackboardCondition"
+              name: "is_right"
+              params:
+                key: "explore.heading"
+                operator: "=="
+                value: "right"
+            - type: "Parallel"
+              name: "spin_right"
+              params:
+                policy: "SuccessOnOne"
+              children:
+                - type: "TimerBehavior"
+                  name: "spin_right_time"
+                  params:
+                    duration_sec: 0.6
+                - type: "DriveWheels"
+                  name: "spin_right_drive"
+                  params:
+                    left_vel:   20.0
+                    right_vel: -20.0
+
+        - type: "Sequence"
+          name: "head_back"
+          memory: true
+          children:
+            - type: "BlackboardCondition"
+              name: "is_back"
+              params:
+                key: "explore.heading"
+                operator: "=="
+                value: "back"
+            - type: "Parallel"
+              name: "spin_180"
+              params:
+                policy: "SuccessOnOne"
+              children:
+                - type: "TimerBehavior"
+                  name: "spin_180_time"
+                  params:
+                    duration_sec: 1.2
+                - type: "DriveWheels"
+                  name: "spin_180_drive"
+                  params:
+                    left_vel:   20.0
+                    right_vel: -20.0
+
+    # 3. Drive a random distance forward, preempted by an obstacle on
+    #    the front ToF. Either condition triggers SuccessOnOne; the
+    #    DriveDistance behavior's terminate() then publishes a
+    #    velocity-mode (0,0) which both stops the wheels and resets
+    #    the firmware's position accumulator for the next cycle.
+    - type: "Parallel"
+      name: "drive_segment"
+      params:
+        policy: "SuccessOnOne"
+      children:
+        - type: "DriveDistance"
+          name: "drive_random"
+          params:
+            # Three independent random rolls per segment give the robot
+            # a "wandering" feel: distance, curvature (-1=hard left,
+            # 0=straight, +1=hard right), and a small speed jitter so
+            # motion looks deliberate rather than mechanical.
+            distance_mm: "{{rand(300, 900)}}"
+            curvature:   "{{rand(-0.35, 0.35)}}"
+            speed_rpm:   "{{rand(22, 35)}}"
+        - type: "BlackboardCondition"
+          name: "obstacle_ahead"
+          params:
+            key: "sensors.tof.front_mm"
+            operator: "<"
+            value: 250.0
+            default: 999999.0

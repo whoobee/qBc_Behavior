@@ -33,6 +33,8 @@ TYPE_COLORS = {
     "SendCommand":   "#2ecc71",
     "WaitForEvent":  "#27ae60",
     "TimerBehavior": "#27ae60",
+    # Subtree call (inlined at load time, leaf in editor)
+    "CallSubtree":   "#3498db",
 }
 
 # Category colors (broader groupings)
@@ -41,6 +43,7 @@ CATEGORY_COLORS = {
     "Decorators":  "#9b59b6",
     "Conditions":  "#f1c40f",
     "Actions":     "#2ecc71",
+    "Subtrees":    "#3498db",
 }
 
 # GUI layout

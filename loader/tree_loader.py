@@ -11,9 +11,11 @@ import yaml
 import py_trees
 
 from loader.schema import (
-    NODE_REGISTRY, COMPOSITE_TYPES, DECORATOR_TYPES,
+    NODE_REGISTRY, COMPOSITE_TYPES, DECORATOR_TYPES, SUBTREE_TYPES,
     register_all, validate_node,
 )
+
+TREES_DIR = Path(__file__).parent.parent / "trees"
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,13 @@ class TreeLoader:
     def __init__(self):
         if not NODE_REGISTRY:
             register_all()
+        # Stack of resolved tree paths currently being loaded — for cycle
+        # detection across CallSubtree references. Reset for each top-level
+        # load() call (preserved across recursive ones).
+        self._load_stack: list[str] = []
+        # Accumulated blackboard config across all inlined subtrees.
+        # Topics are deduped on first occurrence (parent wins).
+        self._merged_blackboard: dict | None = None
 
     def load(self, yaml_path: str) -> tuple:
         """Load a YAML descriptor and build the tree.
@@ -35,7 +44,12 @@ class TreeLoader:
         Returns:
             (root_behaviour, blackboard_config, tree_meta)
         """
-        path = Path(yaml_path)
+        is_top_level = not self._load_stack
+
+        path = Path(yaml_path).resolve()
+        if str(path) in self._load_stack:
+            cycle = " -> ".join(self._load_stack + [str(path)])
+            raise TreeLoadError(f"Circular subtree reference: {cycle}")
         if not path.exists():
             raise TreeLoadError(f"File not found: {yaml_path}")
 
@@ -52,18 +66,35 @@ class TreeLoader:
         if root_desc is None:
             raise TreeLoadError(f"No 'root' section in {yaml_path}")
 
-        errors = self._validate_tree(root_desc)
-        if errors:
-            msg = f"Validation errors in {yaml_path}:\n" + "\n".join(
-                f"  - {e}" for e in errors)
-            raise TreeLoadError(msg)
+        self._load_stack.append(str(path))
+        try:
+            if is_top_level:
+                self._merged_blackboard = self._copy_blackboard(bb_config)
+            else:
+                self._merge_blackboard(bb_config)
 
-        root = self._build_node(root_desc)
+            errors = self._validate_tree(root_desc)
+            if errors:
+                msg = f"Validation errors in {yaml_path}:\n" + "\n".join(
+                    f"  - {e}" for e in errors)
+                raise TreeLoadError(msg)
+
+            root = self._build_node(root_desc)
+        finally:
+            self._load_stack.pop()
+
         logger.info(
             "Loaded tree '%s' from %s (%d nodes)",
-            tree_meta.get("name", "unnamed"), yaml_path,
+            tree_meta.get("name", "unnamed"), path,
             self._count_nodes(root),
         )
+
+        if is_top_level:
+            merged = self._merged_blackboard or bb_config
+            self._merged_blackboard = None
+            return root, merged, tree_meta
+        # Inner calls: caller (CallSubtree) discards bb_config since
+        # it's already been merged into self._merged_blackboard.
         return root, bb_config, tree_meta
 
     def _build_node(self, desc: dict) -> py_trees.behaviour.Behaviour:
@@ -72,6 +103,9 @@ class TreeLoader:
         name = desc["name"]
         params = desc.get("params", {})
 
+        if node_type in SUBTREE_TYPES:
+            return self._build_subtree(name, params)
+
         if node_type in DECORATOR_TYPES:
             return self._build_decorator(node_type, name, params, desc)
 
@@ -79,6 +113,72 @@ class TreeLoader:
             return self._build_composite(node_type, name, params, desc)
 
         return self._build_leaf(node_type, name, params)
+
+    def _build_subtree(self, name: str,
+                       params: dict) -> py_trees.behaviour.Behaviour:
+        """Inline a referenced tree's root in place of a CallSubtree node.
+
+        Recursively calls load(), which merges the subtree's blackboard
+        config into the accumulated config and detects cycles via
+        self._load_stack.
+        """
+        tree_path = params.get("tree_path")
+        if not tree_path:
+            raise TreeLoadError(
+                f"CallSubtree '{name}' missing required 'tree_path' param")
+        resolved = self._resolve_subtree_path(tree_path)
+        sub_root, _, _ = self.load(str(resolved))
+        # Prefix names so the inlined subtree's nodes don't collide with
+        # other names in the parent tree (visualizer keys by name).
+        self._prefix_node_names(sub_root, f"{name}/")
+        return sub_root
+
+    def _resolve_subtree_path(self, tree_path: str) -> Path:
+        """Resolve a CallSubtree's tree_path: absolute, or relative to
+        the trees directory, with optional .yaml extension."""
+        p = Path(tree_path)
+        if p.is_absolute() and p.exists():
+            return p
+        candidates = [TREES_DIR / tree_path]
+        if not p.suffix:
+            candidates.append(TREES_DIR / (tree_path + ".yaml"))
+        for c in candidates:
+            if c.exists() and c.is_file():
+                return c
+        raise TreeLoadError(f"Subtree file not found: {tree_path}")
+
+    def _prefix_node_names(self, node: py_trees.behaviour.Behaviour,
+                            prefix: str):
+        node.name = prefix + node.name
+        if hasattr(node, "children"):
+            for child in node.children:
+                self._prefix_node_names(child, prefix)
+
+    def _copy_blackboard(self, bb: dict) -> dict:
+        import copy
+        return {
+            "subscriptions": [copy.deepcopy(e)
+                              for e in bb.get("subscriptions", [])],
+            "events":        [copy.deepcopy(e)
+                              for e in bb.get("events", [])],
+            "heartbeats":    [copy.deepcopy(e)
+                              for e in bb.get("heartbeats", [])],
+        }
+
+    def _merge_blackboard(self, sub_bb: dict):
+        """Merge a subtree's blackboard config into self._merged_blackboard,
+        deduping by topic (parent wins)."""
+        if self._merged_blackboard is None:
+            self._merged_blackboard = self._copy_blackboard({})
+        import copy
+        for section in ("subscriptions", "events", "heartbeats"):
+            existing = {e.get("topic")
+                        for e in self._merged_blackboard.get(section, [])}
+            for entry in sub_bb.get(section, []):
+                topic = entry.get("topic")
+                if topic and topic not in existing:
+                    self._merged_blackboard[section].append(copy.deepcopy(entry))
+                    existing.add(topic)
 
     def _build_composite(self, node_type: str, name: str, params: dict,
                          desc: dict) -> py_trees.behaviour.Behaviour:
@@ -125,8 +225,20 @@ class TreeLoader:
 
     def _build_leaf(self, node_type: str, name: str,
                     params: dict) -> py_trees.behaviour.Behaviour:
-        """Build a leaf behavior node."""
+        """Build a leaf behavior node.
+
+        Action params are passed through resolve_static() first so any
+        `{{srand(...)}}` / `{{schoice(...)}}` placeholders are evaluated
+        once at load time and baked into the constructed node. Dynamic
+        `{{rand(...)}}` placeholders pass through untouched and resolve
+        at action initialise().
+        """
+        from loader.schema import ACTION_TYPES
+        from behaviors.random_expr import resolve_static
+
         cls = NODE_REGISTRY[node_type]
+        if node_type in ACTION_TYPES:
+            params = resolve_static(params)
         return cls(name=name, **params)
 
     def _make_parallel_policy(self, name: str):

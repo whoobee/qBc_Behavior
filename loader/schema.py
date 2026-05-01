@@ -1,6 +1,19 @@
 """Node type registry and validation for behavior tree YAML descriptors."""
 
+import re
+
 import py_trees
+
+# Action node types may use "{{rand(...)}}" placeholders for any param.
+# These are resolved at runtime, so validation must skip type/value checks
+# when the value is a placeholder string.
+ACTION_TYPES = {"PlayAnimation", "PlayAudio", "MoveJoint", "SendCommand",
+                "DriveWheels", "DriveDistance"}
+_PLACEHOLDER_RE = re.compile(r"\{\{.+?\}\}")
+
+
+def _is_placeholder(value) -> bool:
+    return isinstance(value, str) and bool(_PLACEHOLDER_RE.search(value))
 
 # These are populated after behavior classes are imported (see register_all below)
 NODE_REGISTRY: dict[str, type] = {}
@@ -31,8 +44,16 @@ NODE_CATEGORIES = {
         "PlayAudio",
         "MoveJoint",
         "SendCommand",
+        "DriveWheels",
+        "DriveDistance",
         "WaitForEvent",
         "TimerBehavior",
+    ],
+    "Exploration": [
+        "PickFreeDirection",
+    ],
+    "Subtrees": [
+        "CallSubtree",
     ],
 }
 
@@ -42,6 +63,7 @@ DECORATOR_TYPES = {
     "Inverter", "Timeout", "RunningIsSuccess", "FailureIsSuccess",
     "SuccessIsFailure", "CooldownGuard",
 }
+SUBTREE_TYPES = {"CallSubtree"}
 
 # Required and optional params for each node type (for validation + creator GUI)
 NODE_PARAMS = {
@@ -92,15 +114,38 @@ NODE_PARAMS = {
     "TimerBehavior": {
         "required": {"duration_sec": float},
     },
+    "DriveWheels": {
+        "optional": {"left_vel": float, "right_vel": float},
+    },
+    "DriveDistance": {
+        "required": {"distance_mm": float},
+        "optional": {
+            "speed_rpm": float, "curvature": float,
+            "timeout_safety_factor": float,
+        },
+    },
+    "PickFreeDirection": {
+        "optional": {
+            "source_key": str, "output_key": str,
+            "min_clearance_mm": float,
+        },
+    },
+    "CallSubtree": {
+        "required": {"tree_path": str},
+    },
 }
 
 
 def register_all():
     """Register all node types. Must be called after behavior modules are imported."""
     from behaviors.conditions import BlackboardCondition, EventCheck, HeartbeatCheck
-    from behaviors.actions import PlayAnimation, PlayAudio, MoveJoint, SendCommand
+    from behaviors.actions import (
+        PlayAnimation, PlayAudio, MoveJoint, SendCommand,
+        DriveWheels, DriveDistance,
+    )
     from behaviors.timers import WaitForEvent, TimerBehavior, CooldownGuard
     from behaviors.composites import RandomSelector
+    from behaviors.exploration import PickFreeDirection
 
     NODE_REGISTRY.update({
         # py_trees builtins
@@ -125,6 +170,10 @@ def register_all():
         "TimerBehavior":       TimerBehavior,
         "CooldownGuard":       CooldownGuard,
         "RandomSelector":      RandomSelector,
+        "DriveWheels":         DriveWheels,
+        "DriveDistance":       DriveDistance,
+        "PickFreeDirection":   PickFreeDirection,
+        "CallSubtree":         None,  # handled specially in tree_loader (inlined)
     })
 
 
@@ -202,9 +251,14 @@ def validate_node(node_type: str, params: dict) -> list[str]:
 
     # -- Type checks --
     all_specs = {**required, **optional}
+    is_action = node_type in ACTION_TYPES
     for key, value in params.items():
         expected_type = all_specs.get(key)
         if expected_type is None or expected_type is object:
+            continue
+        # Action params may carry "{{rand(...)}}" placeholders that
+        # resolve at runtime — skip static type-check for those.
+        if is_action and _is_placeholder(value):
             continue
         if expected_type is float and isinstance(value, (int, float)):
             continue
@@ -229,7 +283,8 @@ def validate_node(node_type: str, params: dict) -> list[str]:
 
     if node_type == "PlayAnimation":
         expr = params.get("expression")
-        if expr is not None and valid["animations"] and expr not in valid["animations"]:
+        if (expr is not None and not _is_placeholder(expr)
+                and valid["animations"] and expr not in valid["animations"]):
             errors.append(
                 f"{node_type}: unknown expression '{expr}' "
                 f"(available: {', '.join(sorted(valid['animations']))})"
@@ -237,24 +292,28 @@ def validate_node(node_type: str, params: dict) -> list[str]:
 
     if node_type == "PlayAudio":
         f = params.get("file")
-        if f is not None and valid["sounds"] and f not in valid["sounds"]:
+        if (f is not None and not _is_placeholder(f)
+                and valid["sounds"] and f not in valid["sounds"]):
             errors.append(
                 f"{node_type}: sound file '{f}' not found "
                 f"(available: {', '.join(sorted(valid['sounds']))})"
             )
         vol = params.get("volume")
-        if vol is not None and isinstance(vol, int) and not (0 <= vol <= 100):
+        if (vol is not None and isinstance(vol, int)
+                and not (0 <= vol <= 100)):
             errors.append(f"{node_type}: volume {vol} out of range (0-100)")
 
     if node_type == "MoveJoint":
         jn = params.get("joint_name")
-        if jn is not None and valid["joint_names"] and jn not in valid["joint_names"]:
+        if (jn is not None and not _is_placeholder(jn)
+                and valid["joint_names"] and jn not in valid["joint_names"]):
             errors.append(
                 f"{node_type}: unknown joint '{jn}' "
                 f"(available: {', '.join(sorted(valid['joint_names']))})"
             )
         mt = params.get("movement_type")
-        if mt is not None and mt not in valid["movement_types"]:
+        if (mt is not None and not _is_placeholder(mt)
+                and mt not in valid["movement_types"]):
             errors.append(
                 f"{node_type}: unknown movement_type '{mt}' "
                 f"(valid: {', '.join(sorted(valid['movement_types']))})"
@@ -269,5 +328,17 @@ def validate_node(node_type: str, params: dict) -> list[str]:
         ds = params.get("duration_sec")
         if ds is not None and isinstance(ds, (int, float)) and ds <= 0:
             errors.append(f"{node_type}: duration_sec must be positive")
+
+    if node_type == "CallSubtree":
+        tp = params.get("tree_path")
+        if tp is not None and isinstance(tp, str):
+            from pathlib import Path
+            trees_dir = Path(__file__).parent.parent / "trees"
+            candidates = [Path(tp), trees_dir / tp, trees_dir / (tp + ".yaml")]
+            if not any(c.exists() and c.is_file() for c in candidates):
+                errors.append(
+                    f"{node_type}: tree file '{tp}' not found "
+                    f"(searched cwd and {trees_dir})"
+                )
 
     return errors

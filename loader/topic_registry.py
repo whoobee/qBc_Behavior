@@ -136,6 +136,50 @@ INPUT_TOPICS = {
             "category": "heartbeat",
         },
     },
+    "Sensors": {
+        "robot/sensors/tof": {
+            "description": "ToF distances (4 cardinal sensors, 20 Hz)",
+            "category": "state",
+            "fields": {
+                "front_mm": "int",
+                "back_mm":  "int",
+                "left_mm":  "int",
+                "right_mm": "int",
+            },
+        },
+        "robot/odometry/pose": {
+            "description": "Odometry pose (20 Hz)",
+            "category": "state",
+            "fields": {
+                "x_mm":        "float",
+                "y_mm":        "float",
+                "heading_deg": "float",
+            },
+        },
+        "robot/imu/orientation": {
+            "description": "IMU orientation + accel (20 Hz)",
+            "category": "state",
+            "fields": {
+                "roll": "float", "pitch": "float", "yaw": "float",
+                "ax": "float", "ay": "float", "az": "float",
+            },
+        },
+    },
+    "Wheels": {
+        "robot/status/motors": {
+            "description": "Per-wheel motor telemetry (round-robin)",
+            "category": "state",
+            "fields": {
+                "motor":        "str (left/right)",
+                "velocity_rpm": "float",
+                "position":     "float (encoder ticks 0..32767)",
+                "current_a":    "float",
+                "temperature":  "float",
+                "fault_code":   "int",
+                "moving":       "bool",
+            },
+        },
+    },
     "Safety (planned)": {
         "robot/safety/battery": {
             "description": "Battery status (planned)",
@@ -232,6 +276,19 @@ OUTPUT_TOPICS = {
             "description": "Trigger AI exploration analysis",
             "fields": {
                 "command": "str (explore)",
+            },
+        },
+    },
+    "Wheels": {
+        "robot/wheels/cmd": {
+            "description": "Wheel drive command — velocity (RPM) or "
+                           "position (delta degrees of wheel rotation)",
+            "fields": {
+                "mode":            "str (velocity | position)",
+                "left_vel":        "float (RPM, velocity mode)",
+                "right_vel":       "float (RPM, velocity mode)",
+                "left_delta_deg":  "float (deg, position mode)",
+                "right_delta_deg": "float (deg, position mode)",
             },
         },
     },
